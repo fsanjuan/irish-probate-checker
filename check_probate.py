@@ -41,11 +41,15 @@ def normalise_surname(raw: str) -> str:
     """
     Convert all-caps or mixed-caps surnames to title case, preserving
     Irish/Scottish prefixes (O', Mc, Mac).
-    E.g. "BRADY" → "Brady", "O'SULLIVAN" → "O'Sullivan", "McAULIFFE" → "McAuliffe"
+    E.g. "FLANAGAN" → "Flanagan", "O'SULLIVAN" → "O'Sullivan", "McAULIFFE" → "McAuliffe"
     """
     s = raw.strip()
     if not s:
         return s
+
+    # Strip any parenthetical nickname rip.ie sometimes puts in the surname field
+    # e.g. "O'Sullivan (Nickname)" → "O'Sullivan"
+    s = re.sub(r"\s*\([^)]*\)", "", s).strip()
 
     # Title-case word by word, handling apostrophes and hyphens
     def cap_word(w: str) -> str:
@@ -62,6 +66,76 @@ def normalise_surname(raw: str) -> str:
     parts = re.split(r"([-\s])", s)
     result = "".join(cap_word(p) if re.match(r"[A-Za-z]", p) else p for p in parts)
     return result
+
+
+def extract_surname_variants(raw: str) -> list[str]:
+    """
+    Generate search variants for Irish/Scottish surnames following courts.ie guidance:
+    - Mc/Mac: try both spaced ("Mc Auliffe", "Mac Giolla") and unspaced ("McAuliffe", "MacGiolla")
+    - O': try without prefix ("O'Sullivan" → also "Sullivan")
+    - Ó: try without accent ("Ó Murchú" → also "O Murchú") and without prefix ("Murchú")
+    - Ní/Nic/Uí: try without accent and without prefix
+
+    Examples:
+        "McAuliffe"  → ["McAuliffe", "Mc Auliffe", "Auliffe"]
+        "Mac Giolla" → ["Mac Giolla","MacGiolla",  "Giolla"]
+        "O'Sullivan" → ["O'Sullivan","Sullivan"]
+        "Ó Murchú"   → ["Ó Murchú",  "O Murchú",   "Murchú"]
+        "Ní Fhaoláin"→ ["Ní Fhaoláin","Ni Fhaoláin","Fhaoláin"]
+        "Flanagan"   → ["Flanagan"]
+    """
+    normalised = normalise_surname(raw)
+    variants: list[str] = [normalised]
+
+    s = normalised
+
+    # --- Mc / Mac (with or without space) ---
+    # Matches "McAuliffe", "Mac Giolla", "MacGiolla" etc.
+    mc_match = re.match(r'^(Mac|Mc)\s*([A-ZÁÉÍÓÚ][a-záéíóú].*)', s)
+    if mc_match:
+        prefix = mc_match.group(1)   # "Mac" or "Mc"
+        stem = mc_match.group(2)     # "Auliffe", "Giolla" etc.
+        unspaced = prefix + stem          # "McAuliffe" / "MacGiolla"
+        spaced = prefix + " " + stem     # "Mc Auliffe" / "Mac Giolla"
+        for v in (unspaced, spaced, stem):
+            if v.lower() not in {x.lower() for x in variants}:
+                variants.append(v)
+
+    # --- O' ---
+    elif re.match(r"^O'", s):
+        stem = s[2:]   # everything after "O'"
+        if stem and stem.lower() not in {x.lower() for x in variants}:
+            variants.append(stem)
+
+    # --- Ó (fada) ---
+    elif re.match(r'^Ó\s+', s):
+        stem = s[2:].strip()   # everything after "Ó "
+        o_plain = "O " + stem  # "O Murchú"
+        for v in (o_plain, stem):
+            if v.lower() not in {x.lower() for x in variants}:
+                variants.append(v)
+
+    # --- Ní ---
+    elif re.match(r'^Ní\s+', s):
+        stem = s[3:].strip()
+        ni_plain = "Ni " + stem
+        for v in (ni_plain, stem):
+            if v.lower() not in {x.lower() for x in variants}:
+                variants.append(v)
+
+    # --- Nic ---
+    elif re.match(r'^Nic\s+', s):
+        stem = s[4:].strip()
+        if stem.lower() not in {x.lower() for x in variants}:
+            variants.append(stem)
+
+    # --- Uí ---
+    elif re.match(r'^Uí\s+', s):
+        stem = s[3:].strip()
+        if stem.lower() not in {x.lower() for x in variants}:
+            variants.append(stem)
+
+    return variants
 
 
 def extract_firstname_variants(raw: str) -> list[str]:
@@ -296,8 +370,8 @@ def build_searches(person: dict, year_offset: int = 0) -> list[tuple[str, str, s
     if not raw_surname or not year_raw:
         return []
 
-    surname = normalise_surname(raw_surname)
     firstname_variants = extract_firstname_variants(raw_firstname)
+    surname_variants = extract_surname_variants(raw_surname)
 
     if not firstname_variants:
         return []
@@ -316,11 +390,12 @@ def build_searches(person: dict, year_offset: int = 0) -> list[tuple[str, str, s
     seen = set()
     searches = []
     for fn in firstname_variants:
-        for yr in years:
-            key = (fn.lower(), surname.lower(), str(yr))
-            if key not in seen:
-                seen.add(key)
-                searches.append((fn, surname, str(yr)))
+        for sn in surname_variants:
+            for yr in years:
+                key = (fn.lower(), sn.lower(), str(yr))
+                if key not in seen:
+                    seen.add(key)
+                    searches.append((fn, sn, str(yr)))
 
     return searches
 
