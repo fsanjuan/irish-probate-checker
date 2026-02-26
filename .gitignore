@@ -1,0 +1,14 @@
+# Output data files — excluded to avoid committing personal information
+*.json
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
