@@ -39,7 +39,7 @@ Fetches death notices from rip.ie for a given area and date range.
 ### Usage
 
 ```bash
-python3 scrape_rip.py --town <town-slug> --year <year>
+python3 src/scrape_rip.py --town <town-slug> --year <year>
 ```
 
 ### Options
@@ -61,16 +61,16 @@ python3 scrape_rip.py --town <town-slug> --year <year>
 
 ```bash
 # Rathfarnham, Dublin, all of 2025
-python3 scrape_rip.py --town rathfarnham --year 2025
+python3 src/scrape_rip.py --town rathfarnham --year 2025
 
 # Terenure, second half of 2025 only
-python3 scrape_rip.py --town terenure --from-date 2025-06-01 --to-date 2025-12-31
+python3 src/scrape_rip.py --town terenure --from-date 2025-06-01 --to-date 2025-12-31
 
 # All of Dublin, 2025, skip detail fetches (faster)
-python3 scrape_rip.py --county dublin --year 2025 --no-details
+python3 src/scrape_rip.py --county dublin --year 2025 --no-details
 
 # Cork city, 2024
-python3 scrape_rip.py --town cork-city --county cork --year 2024
+python3 src/scrape_rip.py --town cork-city --county cork --year 2024
 ```
 
 ### Output
@@ -103,7 +103,7 @@ Takes the JSON output from `scrape_rip.py` and checks each person against the co
 ### Usage
 
 ```bash
-python3 check_probate.py <input.json>
+python3 src/check_probate.py <input.json>
 ```
 
 ### Options
@@ -119,16 +119,16 @@ python3 check_probate.py <input.json>
 
 ```bash
 # Standard run — checks all 279 people, saves full results
-python3 check_probate.py rathfarnham_2025.json
+python3 src/check_probate.py rathfarnham_2025.json
 
 # Only save people where a grant was found (clean output)
-python3 check_probate.py rathfarnham_2025.json --only-matches
+python3 src/check_probate.py rathfarnham_2025.json --only-matches
 
 # Also search the year before and after (catches edge cases)
-python3 check_probate.py rathfarnham_2025.json --year-offset 1
+python3 src/check_probate.py rathfarnham_2025.json --year-offset 1
 
 # Custom output path
-python3 check_probate.py rathfarnham_2025.json --output my_results.json
+python3 src/check_probate.py rathfarnham_2025.json --output my_results.json
 ```
 
 ### Name handling
@@ -211,10 +211,10 @@ The top-level `probate_found` flag on each result makes it easy to filter.
 
 ```bash
 # Step 1 — scrape death notices for your area and year
-python3 scrape_rip.py --town rathfarnham --year 2025
+python3 src/scrape_rip.py --town rathfarnham --year 2025
 
 # Step 2 — check probate status for all of them
-python3 check_probate.py rathfarnham_2025.json
+python3 src/check_probate.py rathfarnham_2025.json
 
 # Step 3 — review results
 #   Open rathfarnham_2025_probate.json and look for entries where
@@ -222,7 +222,7 @@ python3 check_probate.py rathfarnham_2025.json
 #   with the property you are buying.
 
 # Or: get a clean list of just the matches
-python3 check_probate.py rathfarnham_2025.json --only-matches --output matches_only.json
+python3 src/check_probate.py rathfarnham_2025.json --only-matches --output matches_only.json
 ```
 
 ---
