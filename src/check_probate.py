@@ -10,7 +10,9 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -354,6 +356,93 @@ def search_probate(firstname: str, lastname: str, year: int | str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def compute_input_hash(path: str) -> str:
+    """Return the SHA-256 hex digest of a file's raw bytes."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_checkpoint(
+    output_path: str, input_hash: str
+) -> tuple[set, list, bool]:
+    """
+    Try to load a previous run from *output_path*.
+
+    Returns (done_ids, existing_results, already_complete) where:
+      - done_ids          — set of rip.ie person IDs already processed
+      - existing_results  — list of result dicts already written
+      - already_complete  — True if the previous run finished cleanly
+
+    Returns (set(), [], False) when there is nothing useful to resume from.
+    """
+    if not os.path.exists(output_path):
+        return set(), [], False
+
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print(f"Warning: could not read existing output file — starting fresh.")
+        return set(), [], False
+
+    if data.get("input_hash") != input_hash:
+        print("Existing output file is for a different input — starting fresh.")
+        return set(), [], False
+
+    existing_results = data.get("results", [])
+    done_ids = {
+        r["rip_ie"]["id"]
+        for r in existing_results
+        if "rip_ie" in r and r["rip_ie"].get("id") is not None
+    }
+    already_complete = bool(data.get("is_complete", False))
+    return done_ids, existing_results, already_complete
+
+
+def _write_output(
+    output_path: str,
+    input_path: str,
+    input_hash: str,
+    results: list,
+    total_searches: int,
+    total_found: int,
+    is_complete: bool,
+    only_matches: bool,
+) -> None:
+    """Write results to *output_path*.
+
+    Intermediate checkpoint writes always include every result so that
+    resume logic can identify which persons have already been processed.
+    The *only_matches* filter is applied only on the final (complete) write.
+    """
+    matched = [r for r in results if r.get("probate_found")]
+    output_results = matched if (is_complete and only_matches) else results
+
+    output = {
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "input_file": input_path,
+        "input_hash": input_hash,
+        "is_complete": is_complete,
+        "summary": {
+            "persons_checked": len(results),
+            "total_searches": total_searches,
+            "total_grants_found": total_found,
+            "persons_with_grants": len(matched),
+        },
+        "results": output_results,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
 
@@ -406,7 +495,11 @@ def process_file(
     delay: float,
     year_offset: int,
     only_matches: bool,
+    checkpoint_every: int = 10,
 ) -> None:
+    # Compute a fingerprint of the input so we can detect stale checkpoints.
+    input_hash = compute_input_hash(input_path)
+
     # Load input
     with open(input_path, "r", encoding="utf-8") as f:
         persons = json.load(f)
@@ -428,11 +521,33 @@ def process_file(
     deduped = list(unique_persons.values())
     print(f"Unique persons to check: {len(deduped)}")
 
-    results = []
-    total_searches = 0
-    total_found = 0
+    # Resume from checkpoint if one exists for this exact input.
+    done_ids, results, already_complete = load_checkpoint(output_path, input_hash)
+
+    if already_complete:
+        print(f"Previous run already completed. Results are in: {output_path}")
+        print("Delete the output file or use --output to specify a new path to re-run.")
+        return
+
+    if done_ids:
+        print(f"Resuming: {len(done_ids)} persons already done, skipping them.")
+
+    # Initialise running totals from the existing checkpoint results.
+    total_searches = sum(len(r.get("probate_searches", [])) for r in results)
+    total_found = sum(
+        s.get("grants_found", 0)
+        for r in results
+        for s in r.get("probate_searches", [])
+    )
+    newly_processed = 0
 
     for i, person in enumerate(deduped, 1):
+        pid = person.get("id")
+
+        if pid in done_ids:
+            print(f"  [{i}/{len(deduped)}] Already done: {person.get('firstname')} {person.get('surname')}")
+            continue
+
         searches = build_searches(person, year_offset=year_offset)
         if not searches:
             print(f"  [{i}/{len(deduped)}] Skipping (no searchable name): {person.get('firstname')} {person.get('surname')}")
@@ -440,7 +555,7 @@ def process_file(
 
         person_result = {
             "rip_ie": {
-                "id": person.get("id"),
+                "id": pid,
                 "firstname": person.get("firstname"),
                 "surname": person.get("surname"),
                 "nee": person.get("nee"),
@@ -488,38 +603,32 @@ def process_file(
 
             time.sleep(delay)
 
-        # Attach a convenience flag
         person_result["probate_found"] = any_found
-
-        if only_matches and not any_found:
-            continue
-
         results.append(person_result)
+        newly_processed += 1
 
-    # Summary
+        # Periodic checkpoint — always write all results so resume works.
+        if newly_processed % checkpoint_every == 0:
+            _write_output(
+                output_path, input_path, input_hash,
+                results, total_searches, total_found,
+                is_complete=False, only_matches=False,
+            )
+            print(f"  [checkpoint] Saved progress ({len(results)} persons done)")
+
+    # Final write
+    matched = [r for r in results if r.get("probate_found")]
     print(f"\n{'='*60}")
     print(f"Persons checked:     {len(deduped)}")
     print(f"Total searches made: {total_searches}")
     print(f"Total grants found:  {total_found}")
-    matched = [r for r in results if r.get("probate_found")]
     print(f"Persons with grants: {len(matched)}")
 
-    # Write output
-    output = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "input_file": input_path,
-        "summary": {
-            "persons_checked": len(deduped),
-            "total_searches": total_searches,
-            "total_grants_found": total_found,
-            "persons_with_grants": len(matched),
-        },
-        "results": results,
-    }
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
-
+    _write_output(
+        output_path, input_path, input_hash,
+        results, total_searches, total_found,
+        is_complete=True, only_matches=only_matches,
+    )
     print(f"\nOutput saved to: {output_path}")
 
     # Print persons with grants
@@ -579,12 +688,18 @@ Examples:
         action="store_true",
         help="Only include persons with at least one grant found in the output",
     )
+    parser.add_argument(
+        "--checkpoint-every",
+        dest="checkpoint_every",
+        type=int,
+        default=10,
+        help="Save progress to the output file every N persons (default: 10)",
+    )
 
     args = parser.parse_args()
 
     input_path = args.input
     if not args.output:
-        import os
         stem = os.path.splitext(os.path.basename(input_path))[0]
         output_path = f"{stem}_probate.json"
     else:
@@ -596,6 +711,7 @@ Examples:
         delay=args.delay,
         year_offset=args.year_offset,
         only_matches=args.only_matches,
+        checkpoint_every=args.checkpoint_every,
     )
 
 
