@@ -235,3 +235,11 @@ python3 src/check_probate.py rathfarnham_2025.json --only-matches --output match
 | `check_probate.py` for 280 people at 0.8s delay | ~6 minutes |
 
 Both scripts are polite to the servers they query. Do not reduce the delay below `0.5s`.
+
+---
+
+## Disclaimer
+
+- This tool automates searches of publicly accessible websites. Check the terms of service of [rip.ie](https://rip.ie) before running `scrape_rip.py`.
+- Output files may contain personal data about living individuals (grantees, addresses). These files are excluded from version control by `.gitignore` — **do not commit them**.
+- This tool is intended for legitimate use only (e.g. verifying probate status when purchasing a property). The authors accept no liability for misuse.
