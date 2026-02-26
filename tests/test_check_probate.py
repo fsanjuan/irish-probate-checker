@@ -1,4 +1,7 @@
+import json
+import os
 import pytest
+import tempfile
 from unittest.mock import patch, MagicMock
 
 from check_probate import (
@@ -10,6 +13,10 @@ from check_probate import (
     parse_grants_count,
     parse_total_pages,
     build_searches,
+    compute_input_hash,
+    load_checkpoint,
+    _write_output,
+    process_file,
 )
 
 
@@ -410,3 +417,195 @@ class TestBuildSearches:
         firstnames = [s[0] for s in searches]
         assert "Aoife" in firstnames
         assert not any("Dr" in fn for fn in firstnames)
+
+
+# ---------------------------------------------------------------------------
+# compute_input_hash
+# ---------------------------------------------------------------------------
+
+class TestComputeInputHash:
+    def test_hash_is_hex_string(self, tmp_path):
+        f = tmp_path / "input.json"
+        f.write_bytes(b'[{"id": 1}]')
+        h = compute_input_hash(str(f))
+        assert isinstance(h, str)
+        assert len(h) == 64  # SHA-256 hex
+
+    def test_same_content_same_hash(self, tmp_path):
+        f1 = tmp_path / "a.json"
+        f2 = tmp_path / "b.json"
+        content = b'[{"id": 1}]'
+        f1.write_bytes(content)
+        f2.write_bytes(content)
+        assert compute_input_hash(str(f1)) == compute_input_hash(str(f2))
+
+    def test_different_content_different_hash(self, tmp_path):
+        f1 = tmp_path / "a.json"
+        f2 = tmp_path / "b.json"
+        f1.write_bytes(b'[{"id": 1}]')
+        f2.write_bytes(b'[{"id": 2}]')
+        assert compute_input_hash(str(f1)) != compute_input_hash(str(f2))
+
+
+# ---------------------------------------------------------------------------
+# load_checkpoint
+# ---------------------------------------------------------------------------
+
+class TestLoadCheckpoint:
+    def _make_checkpoint(self, tmp_path, input_hash, results, is_complete=False):
+        data = {
+            "input_hash": input_hash,
+            "is_complete": is_complete,
+            "results": results,
+        }
+        p = tmp_path / "out.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        return str(p)
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        done, results, complete = load_checkpoint(str(tmp_path / "missing.json"), "abc")
+        assert done == set()
+        assert results == []
+        assert complete is False
+
+    def test_returns_empty_on_hash_mismatch(self, tmp_path):
+        path = self._make_checkpoint(tmp_path, "hash-A", [])
+        done, results, complete = load_checkpoint(path, "hash-B")
+        assert done == set()
+        assert results == []
+        assert complete is False
+
+    def test_returns_empty_on_corrupt_json(self, tmp_path):
+        p = tmp_path / "bad.json"
+        p.write_text("not json", encoding="utf-8")
+        done, results, complete = load_checkpoint(str(p), "any")
+        assert done == set()
+
+    def test_resumes_partial_run(self, tmp_path):
+        results = [
+            {"rip_ie": {"id": 1}, "probate_searches": [], "probate_found": False},
+            {"rip_ie": {"id": 2}, "probate_searches": [], "probate_found": True},
+        ]
+        path = self._make_checkpoint(tmp_path, "hash-X", results, is_complete=False)
+        done, loaded, complete = load_checkpoint(path, "hash-X")
+        assert done == {1, 2}
+        assert len(loaded) == 2
+        assert complete is False
+
+    def test_detects_already_complete(self, tmp_path):
+        path = self._make_checkpoint(tmp_path, "hash-X", [], is_complete=True)
+        _, _, complete = load_checkpoint(path, "hash-X")
+        assert complete is True
+
+
+# ---------------------------------------------------------------------------
+# _write_output
+# ---------------------------------------------------------------------------
+
+class TestWriteOutput:
+    def _result(self, pid, found):
+        return {"rip_ie": {"id": pid}, "probate_searches": [], "probate_found": found}
+
+    def test_checkpoint_includes_all_results_ignoring_only_matches(self, tmp_path):
+        # Intermediate writes (is_complete=False) must always store every result
+        # so resume logic knows which persons were already processed.
+        path = str(tmp_path / "out.json")
+        results = [self._result(1, True), self._result(2, False)]
+        _write_output(path, "in.json", "h", results, 2, 1, is_complete=False, only_matches=True)
+        data = json.loads(open(path).read())
+        assert len(data["results"]) == 2
+
+    def test_final_write_filters_when_only_matches(self, tmp_path):
+        path = str(tmp_path / "out.json")
+        results = [self._result(1, True), self._result(2, False)]
+        _write_output(path, "in.json", "h", results, 2, 1, is_complete=True, only_matches=True)
+        data = json.loads(open(path).read())
+        assert len(data["results"]) == 1
+        assert data["results"][0]["rip_ie"]["id"] == 1
+
+    def test_final_write_includes_all_when_not_only_matches(self, tmp_path):
+        path = str(tmp_path / "out.json")
+        results = [self._result(1, True), self._result(2, False)]
+        _write_output(path, "in.json", "h", results, 2, 1, is_complete=True, only_matches=False)
+        data = json.loads(open(path).read())
+        assert len(data["results"]) == 2
+
+    def test_output_contains_input_hash_and_is_complete_flag(self, tmp_path):
+        path = str(tmp_path / "out.json")
+        _write_output(path, "in.json", "deadbeef", [], 0, 0, is_complete=False, only_matches=False)
+        data = json.loads(open(path).read())
+        assert data["input_hash"] == "deadbeef"
+        assert data["is_complete"] is False
+
+    def test_summary_reflects_all_persons_even_when_results_filtered(self, tmp_path):
+        # With only_matches=True the results list is shorter, but the summary
+        # counters should still describe the full run, not just the filtered list.
+        path = str(tmp_path / "out.json")
+        results = [self._result(1, True), self._result(2, False)]
+        _write_output(path, "in.json", "h", results, 7, 3, is_complete=True, only_matches=True)
+        data = json.loads(open(path).read())
+        assert data["summary"]["persons_checked"] == 2
+        assert data["summary"]["persons_with_grants"] == 1
+        assert data["summary"]["total_searches"] == 7
+        assert data["summary"]["total_grants_found"] == 3
+
+
+# ---------------------------------------------------------------------------
+# process_file — checkpoint integration
+# ---------------------------------------------------------------------------
+
+class TestProcessFileResume:
+    def _make_input(self, tmp_path, persons):
+        p = tmp_path / "input.json"
+        p.write_text(json.dumps(persons), encoding="utf-8")
+        return str(p)
+
+    def _person(self, pid):
+        # Give each person a unique surname derived from their ID so that
+        # process_file's deduplication step keeps all of them.
+        surname = f"Flanagan{pid}"
+        return {
+            "id": pid,
+            "firstname": "Aoife",
+            "surname": surname,
+            "nee": "",
+            "town": "Rathfarnham",
+            "county": "Dublin",
+            "date_of_death": "2025-03-15",
+            "year_of_death": "2025",
+            "date_published": "2025-03-16",
+            "url": f"https://www.rip.ie/death-notice/aoife-{surname.lower()}-dublin-rathfarnham-{pid}",
+        }
+
+    @patch("check_probate.search_probate")
+    def test_skips_persons_already_in_checkpoint(self, mock_search, tmp_path):
+        persons = [self._person(1), self._person(2), self._person(3)]
+        input_path = self._make_input(tmp_path, persons)
+        output_path = str(tmp_path / "out.json")
+
+        # Pre-write a checkpoint that says person 1 and 2 are already done.
+        input_hash = compute_input_hash(input_path)
+        done_results = [
+            {"rip_ie": {"id": 1}, "probate_searches": [], "probate_found": False},
+            {"rip_ie": {"id": 2}, "probate_searches": [], "probate_found": False},
+        ]
+        _write_output(output_path, input_path, input_hash, done_results, 2, 0, is_complete=False, only_matches=False)
+
+        mock_search.return_value = {"search": {}, "grants_found": 0, "grants": []}
+        process_file(input_path, output_path, delay=0, year_offset=0, only_matches=False)
+
+        # Only person 3 should have triggered a search.
+        assert mock_search.call_count == 1
+
+    @patch("check_probate.search_probate")
+    def test_returns_immediately_when_already_complete(self, mock_search, tmp_path):
+        persons = [self._person(1)]
+        input_path = self._make_input(tmp_path, persons)
+        output_path = str(tmp_path / "out.json")
+
+        input_hash = compute_input_hash(input_path)
+        _write_output(output_path, input_path, input_hash, [], 0, 0, is_complete=True, only_matches=False)
+
+        process_file(input_path, output_path, delay=0, year_offset=0, only_matches=False)
+
+        mock_search.assert_not_called()
