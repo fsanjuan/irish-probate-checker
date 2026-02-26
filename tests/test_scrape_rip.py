@@ -55,6 +55,13 @@ class TestBuildNoticeUrl:
         url = build_notice_url({"id": 100005})
         assert "https://www.rip.ie/death-notice/" in url
 
+    def test_null_town_does_not_raise(self):
+        # rip.ie returns "town": null for county-wide records
+        notice = {"id": 100006, "firstname": "Aoife", "surname": "Flanagan",
+                  "county": {"name": "Dublin"}, "town": None}
+        url = build_notice_url(notice)
+        assert "https://www.rip.ie/death-notice/" in url
+
 
 # ---------------------------------------------------------------------------
 # fetch_notices_page

@@ -137,8 +137,8 @@ def build_notice_url(notice: dict) -> str:
     """Build the rip.ie URL for a notice."""
     first = notice.get("firstname", "").lower().replace(" ", "-").replace("(", "").replace(")", "")
     surname = notice.get("surname", "").lower()
-    county = notice.get("county", {}).get("name", "").lower()
-    town = notice.get("town", {}).get("name", "").lower().replace(" ", "-")
+    county = (notice.get("county") or {}).get("name", "").lower()
+    town = (notice.get("town") or {}).get("name", "").lower().replace(" ", "-")
     nid = notice.get("id", "")
     return f"{NOTICE_BASE_URL}/{first}-{surname}-{county}-{town}-{nid}"
 
@@ -207,8 +207,8 @@ def scrape(
                 "firstname": r.get("firstname", ""),
                 "surname": r.get("surname", ""),
                 "nee": r.get("nee", ""),
-                "town": r.get("town", {}).get("name", ""),
-                "county": r.get("county", {}).get("name", ""),
+                "town": (r.get("town") or {}).get("name", ""),
+                "county": (r.get("county") or {}).get("name", ""),
                 "date_of_death": death_date,
                 "year_of_death": death_year,
                 "date_published": published_date,
