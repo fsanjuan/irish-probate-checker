@@ -32,6 +32,36 @@ pip3 install requests --break-system-packages
 
 ---
 
+## Running with Docker
+
+If you'd rather not install anything, you can use the Docker image instead.
+
+```bash
+# Build the image
+docker build --target app -t rip-probate:app .
+```
+
+Create a local directory for output files, then mount it when running:
+
+```bash
+mkdir output
+
+# Step 1 — scrape death notices
+docker run --rm -v $(pwd)/output:/app/output rip-probate:app \
+  python src/scrape_rip.py --town rathfarnham --year 2025 \
+  --output-csv output/rathfarnham_2025.csv \
+  --output-json output/rathfarnham_2025.json
+
+# Step 2 — check probate status
+docker run --rm -v $(pwd)/output:/app/output rip-probate:app \
+  python src/check_probate.py output/rathfarnham_2025.json \
+  --output output/rathfarnham_2025_probate.json
+```
+
+Results will appear in your local `output/` directory.
+
+---
+
 ## Script 1: scrape_rip.py
 
 Fetches death notices from rip.ie for a given area and date range.
