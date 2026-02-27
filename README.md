@@ -1,4 +1,4 @@
-# rip-probate
+# irish-probate-checker
 
 A two-script toolkit for researching probate status on Irish properties.
 
