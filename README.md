@@ -257,17 +257,6 @@ python3 src/check_probate.py rathfarnham_2025.json --only-matches --output match
 
 ---
 
-## Performance
-
-| Step | ~Time |
-|---|---|
-| `scrape_rip.py` for one town, one year (~280 notices) | 3–5 minutes |
-| `check_probate.py` for 280 people at 0.8s delay | ~6 minutes |
-
-Both scripts are polite to the servers they query. Do not reduce the delay below `0.5s`.
-
----
-
 ## Disclaimer
 
 - This tool automates searches of publicly accessible websites. Check the terms of service of [rip.ie](https://rip.ie) before running `scrape_rip.py`.
